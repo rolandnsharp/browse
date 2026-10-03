@@ -32,11 +32,18 @@ type
     time:      uint32
     state:     uint32
     keyval:    uint32
+  GdkRGBA {.bycopy.} = object
+    red, green, blue, alpha: cdouble
 
 const
   ShiftMask   = 1'u32 shl 0
   ControlMask = 1'u32 shl 2
   CookiesSqlite = 1.cint            # WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE
+  LoadFinished  = 3.cint            # WEBKIT_LOAD_FINISHED
+  # Shown until the first page has loaded, so opening a window doesn't
+  # flash white: the same 242424 as foot and the sway background.
+  Dark  = GdkRGBA(red: 0x24 / 255, green: 0x24 / 255, blue: 0x24 / 255, alpha: 1)
+  White = GdkRGBA(red: 1, green: 1, blue: 1, alpha: 1)
 
 # --- GLib / GObject / GTK ---------------------------------------------------
 proc g_set_prgname(name: cstring) {.importc, dynlib: libGlib.}
@@ -52,6 +59,8 @@ proc gtk_window_set_title(w: GPointer; title: cstring) {.importc, dynlib: libGtk
 proc gtk_container_add(c, child: GPointer) {.importc, dynlib: libGtk.}
 proc gtk_widget_show_all(w: GPointer) {.importc, dynlib: libGtk.}
 proc gtk_widget_grab_focus(w: GPointer) {.importc, dynlib: libGtk.}
+proc gtk_widget_override_background_color(w: GPointer; state: cint; c: ptr GdkRGBA)
+  {.importc, dynlib: libGtk.}
 
 # --- WebKitGTK ----------------------------------------------------------------
 proc webkit_web_context_get_default(): GPointer {.importc, dynlib: libWebkit.}
@@ -64,6 +73,7 @@ proc webkit_settings_set_user_agent(s: GPointer; ua: cstring) {.importc, dynlib:
 proc webkit_web_view_load_uri(v: GPointer; uri: cstring) {.importc, dynlib: libWebkit.}
 proc webkit_web_view_load_html(v: GPointer; html, baseUri: cstring) {.importc, dynlib: libWebkit.}
 proc webkit_web_view_reload(v: GPointer) {.importc, dynlib: libWebkit.}
+proc webkit_web_view_set_background_color(v: GPointer; c: ptr GdkRGBA) {.importc, dynlib: libWebkit.}
 proc webkit_web_view_go_back(v: GPointer) {.importc, dynlib: libWebkit.}
 proc webkit_web_view_go_forward(v: GPointer) {.importc, dynlib: libWebkit.}
 proc webkit_web_view_get_zoom_level(v: GPointer): cdouble {.importc, dynlib: libWebkit.}
@@ -93,6 +103,12 @@ proc onDestroy(w, data: GPointer) {.cdecl.} = gtk_main_quit()
 proc onTitle(obj, pspec, data: GPointer) {.cdecl.} =
   let t = webkit_web_view_get_title(view)
   gtk_window_set_title(window, if t.isNil or t[0] == '\0': cstring"browse" else: t)
+
+proc onLoad(v: GPointer; event: cint; data: GPointer) {.cdecl.} =
+  # Pages that don't set a background expect white, so switch once one is in.
+  if event == LoadFinished:
+    var c = White
+    webkit_web_view_set_background_color(view, addr c)
 
 proc onCreate(v, action, data: GPointer): GPointer {.cdecl.} =
   let uri = webkit_uri_request_get_uri(webkit_navigation_action_get_request(action))
@@ -180,11 +196,15 @@ view = webkit_web_view_new()
 if userAgent.len > 0:
   webkit_settings_set_user_agent(webkit_web_view_get_settings(view), cstring(userAgent))
 webkit_web_view_set_zoom_level(view, defaultZoom)
+var dark = Dark
+gtk_widget_override_background_color(window, 0, addr dark)   # GTK_STATE_FLAG_NORMAL
+webkit_web_view_set_background_color(view, addr dark)
 gtk_container_add(window, view)
 
 discard g_signal_connect_data(window, "destroy", onDestroy, nil, nil, 0)
 discard g_signal_connect_data(window, "key-press-event", onKey, nil, nil, 0)
 discard g_signal_connect_data(view, "notify::title", onTitle, nil, nil, 0)
+discard g_signal_connect_data(view, "load-changed", onLoad, nil, nil, 0)
 discard g_signal_connect_data(view, "create", onCreate, nil, nil, 0)
 discard g_signal_connect_data(view, "web-process-terminated", onCrash, nil, nil, 0)
 
